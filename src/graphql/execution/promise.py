@@ -9,7 +9,6 @@ from graphql.error.graphql_error import GraphQLError
 from graphql.execution.middleware import GraphQLFieldResolver
 from graphql.execution.values import get_argument_values
 from graphql.language.ast import DocumentNode, FieldNode
-from graphql.pyutils.awaitable_or_value import AwaitableOrValue
 from graphql.pyutils.path import Path
 from graphql.pyutils.undefined import Undefined
 from graphql.type.definition import GraphQLObjectType, GraphQLTypeResolver
@@ -30,7 +29,7 @@ PromiseOrValue = Union[Promise[T], T]
 class PromiseExecutionContext(ExecutionContext):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.is_awaitable = promise.is_thenable
+        self.is_awaitable = self.is_promise = promise.is_thenable
 
     def execute_fields_serially(
         self,
@@ -40,7 +39,7 @@ class PromiseExecutionContext(ExecutionContext):
         fields: Dict[str, List[FieldNode]],
     ) -> PromiseOrValue[Dict[str, Any]]:
         results: PromiseOrValue[Dict[str, Any]] = {}
-        is_awaitable = self.is_awaitable
+        is_promise = self.is_promise
         for response_name, field_nodes in fields.items():
             field_path = Path(path, response_name, parent_type.name)
             result = self.execute_field(
@@ -48,8 +47,7 @@ class PromiseExecutionContext(ExecutionContext):
             )
             if result is Undefined:
                 continue
-            if is_awaitable(results):
-                # This should not happen?????
+            if is_promise(results):
                 # noinspection PyShadowingNames
                 def await_and_set_result(
                     results: Promise[Dict[str, Any]],
@@ -57,19 +55,21 @@ class PromiseExecutionContext(ExecutionContext):
                     result: PromiseOrValue[Any],
                 ) -> Promise[Dict[str, Any]]:
                     def handle_results(resolved_results):
+                        if is_promise(result):
+                            def on_resolve(v):
+                                resolved_results[response_name] = v
+                                return resolved_results
+                            return result.then(on_resolve)
                         resolved_results[response_name] = result
+                        return resolved_results
 
                     results.then(handle_results)
-                    # awaited_results = await results
-                    # awaited_results[response_name] = (
-                    #     await result if is_awaitable(result) else result
-                    # )
                     return results
 
                 results = await_and_set_result(
                     cast(Promise, results), response_name, result
                 )
-            elif is_awaitable(result):
+            elif is_promise(result):
                 # noinspection PyShadowingNames
                 def set_result(
                     results: Dict[str, Any],
@@ -95,7 +95,7 @@ class PromiseExecutionContext(ExecutionContext):
         source: Any,
         field_nodes: List[FieldNode],
         path: Path,
-    ) -> AwaitableOrValue[Any]:
+    ) -> PromiseOrValue[Any]:
         """Resolve the field on the given source object.
 
         Implements the "Executing fields" section of the spec.
@@ -127,7 +127,7 @@ class PromiseExecutionContext(ExecutionContext):
             # value as part of the resolve info.
             result = resolve_fn(source, info, **args)
 
-            if self.is_awaitable(result):
+            if self.is_promise(result):
                 result: Promise = result
                 # noinspection PyShadowingNames
                 def await_result() -> Any:
@@ -148,7 +148,7 @@ class PromiseExecutionContext(ExecutionContext):
             completed = self.complete_value(
                 return_type, field_nodes, info, path, result
             )
-            if self.is_awaitable(completed):
+            if self.is_promise(completed):
                 # noinspection PyShadowingNames
                 def await_completed() -> Any:
                     def handle_error(raw_error):
@@ -172,14 +172,14 @@ class PromiseExecutionContext(ExecutionContext):
         source_value: Any,
         path: Optional[Path],
         fields: Dict[str, List[FieldNode]],
-    ) -> AwaitableOrValue[Dict[str, Any]]:
+    ) -> PromiseOrValue[Dict[str, Any]]:
         """Execute the given fields concurrently.
 
         Implements the "Executing selection sets" section of the spec
         for fields that may be executed in parallel.
         """
         results = {}
-        is_awaitable = self.is_awaitable
+        is_promise = self.is_promise
         awaitable_fields: List[str] = []
         append_awaitable = awaitable_fields.append
         for response_name, field_nodes in fields.items():
@@ -189,7 +189,7 @@ class PromiseExecutionContext(ExecutionContext):
             )
             if result is not Undefined:
                 results[response_name] = result
-                if is_awaitable(result):
+                if is_promise(result):
                     append_awaitable(response_name)
 
         if not awaitable_fields:
@@ -221,7 +221,7 @@ def _execute_promise(
     subscribe_field_resolver: Optional[GraphQLFieldResolver] = None,
     middleware: Optional[Middleware] = None,
     execution_context_class: Optional[Type["PromiseExecutionContext"]] = None,
-) -> AwaitableOrValue[ExecutionResult]:
+) -> PromiseOrValue[ExecutionResult]:
     """Execute a GraphQL operation.
 
     Implements the "Executing requests" section of the GraphQL specification.
@@ -266,15 +266,10 @@ def _execute_promise(
         result = exe_context.execute_operation(operation, root_value)
 
         if exe_context.is_awaitable(result):
-            # noinspection PyShadowingNames
-            def await_result() -> Any:
-                p = result.then(
-                    lambda r: build_response(r, errors),
-                    lambda e: not errors.append(e) and build_response(None, errors),
-                )
-                return p
-
-            return await_result().get()
+            return result.then(
+                lambda r: build_response(r, errors),
+                lambda e: (not errors.append(e)) and build_response(None, errors),
+            )
     except GraphQLError as error:
         errors.append(error)
         return build_response(None, errors)
