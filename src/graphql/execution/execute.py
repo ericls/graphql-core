@@ -1047,7 +1047,6 @@ def assume_not_awaitable(_value: Any) -> bool:
     """Replacement for isawaitable if everything is assumed to be synchronous."""
     return False
 
-
 def execute_sync(
     schema: GraphQLSchema,
     document: DocumentNode,
