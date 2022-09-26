@@ -20,6 +20,7 @@ from graphql.error.graphql_error import GraphQLError
 from graphql.execution.middleware import GraphQLFieldResolver
 from graphql.execution.values import get_argument_values
 from graphql.language.ast import DocumentNode, FieldNode
+from graphql.language.parser import parse
 from graphql.pyutils import inspect, is_iterable
 from graphql.pyutils.path import Path
 from graphql.pyutils.undefined import Undefined
@@ -39,6 +40,7 @@ from graphql.type.definition import (
     is_object_type,
 )
 from graphql.type.schema import GraphQLSchema
+from graphql.type.validate import validate_schema
 
 from .execute import (
     ExecutionContext,
@@ -48,6 +50,7 @@ from .execute import (
     get_field_def,
     invalid_return_type_error,
 )
+
 
 T = TypeVar("T")
 PromiseOrValue = Union[Promise[T], T]
@@ -419,6 +422,7 @@ class PromiseExecutionContext(ExecutionContext):
                 # noinspection PyShadowingNames
                 def await_completed(item: Promise[Any], item_path: Path) -> Any:
                     try:
+
                         def on_item_resolve(item_value):
                             completed = self.complete_value(
                                 item_type, field_nodes, info, item_path, item_value
@@ -550,3 +554,89 @@ def execute_promise(*args, **kwargs):
     # Gotta make sure there's a queue before calling any other promises
     p = Promise.resolve(None).then(lambda _: _execute_promise(*args, **kwargs))
     return p.get()
+
+
+def graphql_impl_promise(
+    schema,
+    source,
+    root_value,
+    context_value,
+    variable_values,
+    operation_name,
+    field_resolver,
+    type_resolver,
+    middleware,
+    execution_context_class,
+    is_awaitable=None,
+):
+    """Execute a query, return asynchronously only if necessary."""
+    # Validate Schema
+    schema_validation_errors = validate_schema(schema)
+    if schema_validation_errors:
+        return ExecutionResult(data=None, errors=schema_validation_errors)
+
+    # Parse
+    try:
+        document = parse(source)
+    except GraphQLError as error:
+        return ExecutionResult(data=None, errors=[error])
+
+    # Validate
+    from graphql.validation import validate
+
+    validation_errors = validate(schema, document)
+    if validation_errors:
+        return ExecutionResult(data=None, errors=validation_errors)
+
+    # Execute
+    return execute_promise(
+        schema,
+        document,
+        root_value,
+        context_value,
+        variable_values,
+        operation_name,
+        field_resolver,
+        type_resolver,
+        None,
+        middleware,
+        execution_context_class,
+    )
+
+
+def graphql_promise(
+    schema,
+    source,
+    root_value,
+    context_value,
+    variable_values=None,
+    operation_name=None,
+    field_resolver=None,
+    type_resolver=None,
+    middleware=None,
+    execution_context_class=None,
+    check_sync=False,
+) -> ExecutionResult:
+    """Execute a GraphQL operation synchronously.
+
+    The graphql_sync function also fulfills GraphQL operations by parsing, validating,
+    and executing a GraphQL document along side a GraphQL schema. However, it guarantees
+    to complete synchronously (or throw an error) assuming that all field resolvers
+    are also synchronous.
+
+    Set check_sync to True to still run checks that no awaitable values are returned.
+    """
+    result = graphql_impl_promise(
+        schema,
+        source,
+        root_value,
+        context_value,
+        variable_values,
+        operation_name,
+        field_resolver,
+        type_resolver,
+        middleware,
+        execution_context_class,
+    )
+
+    return cast(ExecutionResult, result)
