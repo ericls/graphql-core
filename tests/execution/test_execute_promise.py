@@ -145,6 +145,10 @@ def describe_execute_promises_handles_promises_as_return_value_from_resolvers():
         author_load_stub.reset_mock()
         name_loader_stub.reset_mock()
 
+        author_loader.clear_all()
+        books_loader.clear_all()
+        name_loader.clear_all()
+
         foo_mutation = parse(
             """
             mutation Foo {
@@ -177,6 +181,10 @@ def describe_execute_promises_handles_promises_as_return_value_from_resolvers():
         name_loader_stub.reset_mock()
         book_loader_stub.reset_mock()
 
+        author_loader.clear_all()
+        books_loader.clear_all()
+        name_loader.clear_all()
+
         foo_query = parse(
             """
             query Foo {
@@ -195,6 +203,17 @@ def describe_execute_promises_handles_promises_as_return_value_from_resolvers():
                         }
                     }
                 }
+              }
+              b: author(id: "2") {
+                  id,
+                  name,
+                  books {
+                      id,
+                      name,
+                      author {
+                          name
+                      }
+                  }
               }
             }
             """
@@ -235,8 +254,22 @@ def describe_execute_promises_handles_promises_as_return_value_from_resolvers():
                         },
                     ],
                 },
+                "b": {
+                    "id": "2",
+                    "name": "2 name",
+                    "books": [
+                        {"id": "2 book_1", "name": "2 book_1 name", "author": {"name": "2 name"}},
+                        {"id": "2 book_2", "name": "2 book_2 name", "author": {"name": "2 name"}},
+                    ],
+                },
             },
             None,
         )
-        author_load_stub.assert_called_once_with(["1"])
-        book_loader_stub.assert_called_once_with(["1 book_1", "1 book_2"])
+        author_load_stub.assert_called_once_with(["1", "2"])
+        # The dataloader will be called multiple times based on the parent type
+        assert [i.args for i in name_loader_stub.call_args_list] == [
+            (["1", "2"], ), (["1 book_1", "1 book_2", "2 book_1", "2 book_2"], )
+        ]
+        book_loader_stub.assert_called_once_with(
+            ["1 book_1", "1 book_2", "2 book_1", "2 book_2"]
+        )
