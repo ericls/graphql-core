@@ -204,6 +204,17 @@ def describe_execute_promises_handles_promises_as_return_value_from_resolvers():
                     }
                 }
               }
+              b: author(id: "2") {
+                  id,
+                  name,
+                  books {
+                      id,
+                      name,
+                      author {
+                          name
+                      }
+                  }
+              }
             }
             """
         )
@@ -243,8 +254,22 @@ def describe_execute_promises_handles_promises_as_return_value_from_resolvers():
                         },
                     ],
                 },
+                "b": {
+                    "id": "2",
+                    "name": "2 name",
+                    "books": [
+                        {"id": "2 book_1", "name": "2 book_1 name", "author": {"name": "2 name"}},
+                        {"id": "2 book_2", "name": "2 book_2 name", "author": {"name": "2 name"}},
+                    ],
+                },
             },
             None,
         )
-        author_load_stub.assert_called_once_with(["1"])
-        book_loader_stub.assert_called_once_with(["1 book_1", "1 book_2"])
+        author_load_stub.assert_called_once_with(["1", "2"])
+        # The dataloader will be called multiple times based on the parent type
+        assert [i.args for i in name_loader_stub.call_args_list] == [
+            (["1", "2"], ), (["1 book_1", "1 book_2", "2 book_1", "2 book_2"], )
+        ]
+        book_loader_stub.assert_called_once_with(
+            ["1 book_1", "1 book_2", "2 book_1", "2 book_2"]
+        )
